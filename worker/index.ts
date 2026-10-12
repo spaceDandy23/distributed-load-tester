@@ -1,3 +1,52 @@
+import express from "express";
+
+
+
+
+
+const app = express();
+
+//add middleware
+
+
+app.use(express.json());
+
+
+app.post("/run-test", async (req, res) => {
+
+
+
+    try{
+
+        const config = req.body;
+
+        const result = await runLoadTest(config);
+
+        res.json(result);
+
+
+    }catch(error){
+
+        console.error(error);
+
+        res.status(500).json({
+            error: "Failed to run load test"
+        })
+
+    }
+
+
+
+    
+
+});
+
+app.listen(4001, () => {
+    console.log("Worker running in port 5001");
+})
+
+
+
 type RequestResult = {
     success: boolean;
     responseTime: number;
@@ -15,57 +64,110 @@ type VirtualUserResult = {
     latencies: number[]
 }
 
+type LoadTestConfig = {
+    url: string;
+    method: HttpMethod;
+    users: number;
+    durationMs: number;
+
+}
+
+
+type HttpMethod = "GET";
 
 
 
+type LoadTestResult = {
 
-const makeRequest = async (): Promise<RequestResult> => {
-    const startTime = performance.now();
+    overallUsers: number;
+    totalSuccessfulRequests: number;
+    totalFailedRequests: number;
+    averageLatency: number;
+    totalRequests: number;
+    durationMs: number;
+    secondsDuration: number;
+    requestsPerSecond: number;
+    p50: number;
+    p95: number;
+    p99: number;
 
-    try {
-        const response = await fetch("http://localhost:5000");
+}
 
-        const endTime = performance.now();
-        const responseTime = endTime - startTime;
+const runLoadTest = async (config: LoadTestConfig) : Promise<LoadTestResult> => {
 
-        // console.log(`Response time: ${responseTime} ms`);
-        // console.log(`HTTP Status: ${response.status}`);
 
-        return {
-            success: response.ok,
-            responseTime,
-            status: response.status
-        };
 
-    } catch (error) {
-        const endTime = performance.now();
-        const responseTime = endTime - startTime;
+    let totalSuccessfulRequests = 0;
+    let totalFailedRequests = 0;
+    let totalLatency = 0;
+    let totalRequests = 0;
+    const overallLatencies: number[] = [];
 
-        console.error(`Error making request: ${error}`);
 
-        return {
-            success: false,
-            responseTime,
-            status: null
-        };
+
+    const { url, method, durationMs, users  } = config;
+
+    const virtualUsers: Promise<VirtualUserResult>[] = [];
+
+    const startTime = performance.now()
+    for (let i = 0; i < users; i++) {
+        const result = runVirtualUser(durationMs, url, method);
+        virtualUsers.push(result);
     }
-};
+    const results = await Promise.all(virtualUsers);
+    const endTime = performance.now();
+    const secondsDuration = (endTime - startTime) / 1000;
 
 
-const runVirtualUser = async (durationMs: number): Promise<VirtualUserResult> => {
+    results.forEach(virtUser => {
+
+        totalSuccessfulRequests += virtUser.successfulRequests;
+        totalFailedRequests += virtUser.failedRequests;
+        totalLatency += virtUser.totalLatency;
+        totalRequests += virtUser.totalRequests;
+        overallLatencies.push(...virtUser.latencies);
+
+    });
+
+    const sortedLatencies = overallLatencies.sort((a,b) => a - b);
+
+    const p50 = calculatePercentile(sortedLatencies, 0.50);
+    const p95 = calculatePercentile(sortedLatencies, 0.95);
+    const p99 = calculatePercentile(sortedLatencies, 0.99);
+
+    return { 
+        overallUsers: users,
+        totalSuccessfulRequests,
+        totalFailedRequests,
+        averageLatency: totalRequests > 0 ? (totalLatency / totalRequests) : 0,
+        totalRequests,
+        durationMs: endTime - startTime,
+        secondsDuration,
+        requestsPerSecond: secondsDuration > 0 ? (totalRequests / secondsDuration) : 0,
+        p50,
+        p95,
+        p99
+    }
+}
 
 
-    let latencies: number[] = [];
+
+
+
+
+const runVirtualUser = async (durationMs: number, url: string, method: HttpMethod): Promise<VirtualUserResult> => {
+
+
+    const latencies: number[] = [];
     let successfulRequests = 0;
     let failedRequests = 0;
     let latencySum = 0;
     let totalRequests = 0;
-    let p50 = 0;
 
     const endTime = performance.now() + durationMs;
 
     while(performance.now() < endTime){
-        const result = await makeRequest();
+        const result = await makeRequest(url, method);
         totalRequests++;
         if(result.success){
             successfulRequests++;
@@ -97,51 +199,68 @@ const runVirtualUser = async (durationMs: number): Promise<VirtualUserResult> =>
 
 
 
-const runVirtualUsers = async (numUsers: number, durationMs: number) => {
+const makeRequest = async (url: string, method: HttpMethod): Promise<RequestResult> => {
+    const startTime = performance.now();
 
+    try {
+        const response = await fetch(url,{
+            method
+        });
 
+        const endTime = performance.now();
+        const responseTime = endTime - startTime;
 
-    let totalSuccessfulRequests = 0;
-    let totalFailedRequests = 0;
-    let totalLatency = 0;
-    let totalRequests = 0;
-    let overallLatencies: number[] = [];
+        // console.log(`Response time: ${responseTime} ms`);
+        // console.log(`HTTP Status: ${response.status}`);
 
+        return {
+            success: response.ok,
+            responseTime,
+            status: response.status
+        };
 
-    const virtualUsers: Promise<VirtualUserResult>[] = [];
+    } catch (error) {
+        const endTime = performance.now();
+        const responseTime = endTime - startTime;
 
-    const startTime = performance.now()
-    for (let i = 0; i < numUsers; i++) {
-        const result = runVirtualUser(durationMs);
-        virtualUsers.push(result);
+        console.error(`Error making request: ${error}`);
+
+        return {
+            success: false,
+            responseTime,
+            status: null
+        };
     }
-    const results = await Promise.all(virtualUsers);
-    const endTime = performance.now();
-    const secondDuration = (endTime - startTime) / 1000;
+};
 
 
-    results.forEach(virtUser => {
 
-        totalSuccessfulRequests += virtUser.successfulRequests;
-        totalFailedRequests += virtUser.failedRequests;
-        totalLatency += virtUser.totalLatency;
-        totalRequests += virtUser.totalRequests;
-        overallLatencies.push(...virtUser.latencies);
 
-    });
 
-    overallLatencies.sort((a,b) => a - b);
 
-    console.log(overallLatencies);
 
-    console.log(`\nOverall results for ${numUsers} virtual users:`);
-    console.log(`Total successful requests: ${totalSuccessfulRequests}`);
-    console.log(`Total failed requests: ${totalFailedRequests}`);
-    console.log(`Overall average latency: ${totalRequests > 0 ? `${(totalLatency/totalRequests).toFixed(2)} ms` : `No requests`}`);
-    console.log(`Total requests made: ${totalSuccessfulRequests + totalFailedRequests}`)
-    console.log(`Total duration: ${secondDuration.toFixed(2)} seconds`);
-    console.log(`Requests per second: ${(totalRequests/secondDuration).toFixed(2)} req/s`);
-    console.log(`p50: ${overallLatencies[Math.floor(overallLatencies.length/2)]}`)
+const calculatePercentile = (sortedLatencies: number[], percentile: number): number => {
+
+
+    const latenciesLength = sortedLatencies.length;
+    if(latenciesLength === 0){
+        return 0;
+    }
+
+    if(percentile > 1 || percentile <= 0){
+        throw new Error("Invalid percentile");
+    }
+
+
+    const rank = Math.ceil(latenciesLength * percentile);
+
+    const index = rank - 1;
+
+
+    return sortedLatencies[index]!;
+
+    
+
 }
 
 
@@ -149,22 +268,7 @@ const runVirtualUsers = async (numUsers: number, durationMs: number) => {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-runVirtualUsers(1, 200);
+// console.log(await runLoadTest({ url: "http://localhost:5000", method: "GET", users: 5, durationMs: 5000 }));
 
 
 
